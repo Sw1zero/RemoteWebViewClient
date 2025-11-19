@@ -151,6 +151,14 @@ remote_webview:
   full_frame_tile_count: 1
   max_bytes_per_msg: 61440
   jpeg_quality: 85
+  backlight_id: back_light
+  dimming_steps:
+    - timeout: 5min
+      brightness: 50%
+    - timeout: 15min
+      brightness: 10%
+    - timeout: 30min
+      brightness: 0%
 
 text:
   - platform: template
@@ -188,6 +196,8 @@ text:
 | `max_bytes_per_msg`     | int (B)   | ❌       | `14336` or `61440`                | Upper bound for a single WS binary message. |
 | `big_endian`            | bool      | ❌       | `true` or `false`                 | Use big-endian RGB565 pixel order for JPEG output (set false for little-endian panels). Default is `true`. |
 | `rotation`              | int       | ❌       | 0, 90, 180, 270                   | Enables software rotation for both the display and touchscreen. |
+| `backlight_id`          | id        | ❌       | `back_light`                      | ID of the light component controlling the display backlight. |
+| `dimming_steps`         | list      | ❌       | see example below                 | List of dimming steps based on inactivity. Each step defines `timeout` and a `brightness` percentage. |
 
 ## Recommendations
 
