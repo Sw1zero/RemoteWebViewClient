@@ -2,6 +2,7 @@
 #include "esphome/core/component.h"
 #include "esphome/components/display/display.h"
 #include "esphome/components/touchscreen/touchscreen.h"
+#include "esphome/components/light/light_state.h"
 #include "JPEGDEC.h"
 #include "protocol.h"
 #include "remote_webview_config.h"
@@ -11,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include <vector>
 
 namespace esphome {
 namespace remote_webview {
@@ -32,12 +34,18 @@ class RemoteWebView : public Component {
   void set_max_bytes_per_msg(int v) { max_bytes_per_msg_ = v; }
   void set_big_endian(bool v) { rgb565_big_endian_ = v; }
   void set_rotation(int v) { rotation_ = v; }
+  void set_backlight(light::LightState *backlight) { backlight_ = backlight; }
+  void add_dimming_step(uint32_t timeout_ms, float brightness) {
+    dimming_steps_.push_back({timeout_ms, brightness});
+  }
   bool open_url(const std::string &s);
 
   void setup() override;
-  void loop() override {}
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::LATE; }
+
+  void record_touch_activity();
 
  private:
   struct WsMsg {
@@ -48,6 +56,10 @@ class RemoteWebView : public Component {
   struct WsReasm {
     uint8_t *buf{nullptr};
     size_t total{0}, filled{0};
+  };
+  struct DimmingStep {
+    uint32_t timeout_ms;
+    float brightness;
   };
 
   static constexpr bool     kCoalesceMoves  = cfg::coalesce_moves;
@@ -73,7 +85,6 @@ class RemoteWebView : public Component {
   bool rgb565_big_endian_{true};
   int rotation_{0};
 
-  uint64_t last_move_us_{0};
   uint64_t last_keepalive_us_{0};
   
   uint64_t frame_start_us_ = 0;
@@ -83,6 +94,12 @@ class RemoteWebView : public Component {
   uint32_t frame_stats_time_{0};
   uint32_t frame_stats_count_{0};
   size_t   frame_stats_bytes_{0};
+
+  // Dimming feature members
+  light::LightState *backlight_{nullptr};
+  std::vector<DimmingStep> dimming_steps_;
+  uint64_t last_touch_activity_us_{0};
+  int current_dim_step_index_{-1};
 
   QueueHandle_t     q_decode_{nullptr};
   SemaphoreHandle_t ws_send_mtx_{nullptr};
@@ -111,6 +128,9 @@ class RemoteWebView : public Component {
   bool ws_send_touch_event_(proto::TouchType type, int x, int y, uint8_t pid);
   bool ws_send_keepalive_();
   bool ws_send_open_url_(const char *url, uint16_t flags);
+
+  void wake_display_();
+  void apply_dim_step_(int step_index);
 
   std::string resolve_device_id_() const;
   std::string build_ws_uri_() const;
