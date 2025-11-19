@@ -45,7 +45,7 @@ psram:
   speed: 80MHz
 
 external_components:
-  - source: github://strange-v/RemoteWebViewClient@main
+  - source: github://Sw1zero/RemoteWebViewClient@main
     refresh: 0s
     components: [ remote_webview ]
 
