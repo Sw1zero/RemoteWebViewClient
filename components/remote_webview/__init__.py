@@ -1,9 +1,16 @@
 import re
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import display, touchscreen
+from esphome.components import display, touchscreen, light
 from esphome.components.display import validate_rotation
-from esphome.const import CONF_ID, CONF_DISPLAY_ID, CONF_URL, CONF_ROTATION
+from esphome.const import (
+    CONF_ID,
+    CONF_DISPLAY_ID,
+    CONF_URL,
+    CONF_ROTATION,
+    CONF_TIMEOUT,
+    CONF_BRIGHTNESS,
+)
 
 
 CONF_DEVICE_ID = "device_id"
@@ -18,6 +25,8 @@ CONF_MIN_FRAME_INTERVAL = "min_frame_interval"
 CONF_JPEG_QUALITY = "jpeg_quality"
 CONF_MAX_BYTES_PER_MSG = "max_bytes_per_msg"
 CONF_BIG_ENDIAN = "big_endian"
+CONF_BACKLIGHT_ID = "backlight_id"
+CONF_DIMMING_STEPS = "dimming_steps"
 
 _SERVER_RE = re.compile(
     r"^(?P<host>[A-Za-z0-9](?:[A-Za-z0-9\-\.]*[A-Za-z0-9])?)\:(?P<port>\d{1,5})$"
@@ -26,11 +35,14 @@ _SERVER_RE = re.compile(
 AUTO_LOAD = []
 DEPENDENCIES = ["display"]
 
+
 def validate_host_port(value):
     s = cv.string_strict(value).strip()
     m = _SERVER_RE.match(s)
     if not m:
-        raise cv.Invalid("server must be in 'host:port' format (no IPv6, no trailing colon)")
+        raise cv.Invalid(
+            "server must be in 'host:port' format (no IPv6, no trailing colon)"
+        )
 
     host = m.group("host")
     port = int(m.group("port"), 10)
@@ -40,8 +52,16 @@ def validate_host_port(value):
 
     return f"{host}:{port}"
 
+
 ns = cg.esphome_ns.namespace("remote_webview")
 RemoteWebView = ns.class_("RemoteWebView", cg.Component)
+
+DIMMING_STEP_SCHEMA = cv.Schema(
+    {
+        cv.Required(CONF_TIMEOUT): cv.positive_time_period_milliseconds,
+        cv.Required(CONF_BRIGHTNESS): cv.percentage,
+    }
+)
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -50,7 +70,6 @@ CONFIG_SCHEMA = cv.Schema(
         cv.GenerateID(CONF_TOUCHSCREEN_ID): cv.use_id(touchscreen.Touchscreen),
         cv.Required(CONF_SERVER): validate_host_port,
         cv.Required(CONF_URL): cv.string,
-
         cv.Optional(CONF_DEVICE_ID): cv.string,
         cv.Optional(CONF_TILE_SIZE): cv.int_,
         cv.Optional(CONF_FULL_FRAME_TILE_COUNT): cv.int_,
@@ -62,8 +81,13 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_MAX_BYTES_PER_MSG): cv.int_,
         cv.Optional(CONF_BIG_ENDIAN): cv.boolean,
         cv.Optional(CONF_ROTATION): validate_rotation,
+        cv.Optional(CONF_BACKLIGHT_ID): cv.use_id(light.LightState),
+        cv.Optional(CONF_DIMMING_STEPS): cv.All(
+            cv.ensure_list(DIMMING_STEP_SCHEMA), cv.Length(min=1)
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
+
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
@@ -84,7 +108,9 @@ async def to_code(config):
     if CONF_FULL_FRAME_TILE_COUNT in config:
         cg.add(var.set_full_frame_tile_count(config[CONF_FULL_FRAME_TILE_COUNT]))
     if CONF_FULL_FRAME_AREA_THRESHOLD in config:
-        cg.add(var.set_full_frame_area_threshold(config[CONF_FULL_FRAME_AREA_THRESHOLD]))
+        cg.add(
+            var.set_full_frame_area_threshold(config[CONF_FULL_FRAME_AREA_THRESHOLD])
+        )
     if CONF_FULL_FRAME_EVERY in config:
         cg.add(var.set_full_frame_every(config[CONF_FULL_FRAME_EVERY]))
     if CONF_EVERY_NTH_FRAME in config:
@@ -100,5 +126,14 @@ async def to_code(config):
     if CONF_ROTATION in config:
         cg.add(var.set_rotation(config[CONF_ROTATION]))
 
+    if CONF_BACKLIGHT_ID in config:
+        backlight = await cg.get_variable(config[CONF_BACKLIGHT_ID])
+        cg.add(var.set_backlight(backlight))
+
+    if CONF_DIMMING_STEPS in config:
+        for step in config[CONF_DIMMING_STEPS]:
+            cg.add(
+                var.add_dimming_step(step[CONF_TIMEOUT], step[CONF_BRIGHTNESS])
+            )
 
     await cg.register_component(var, config)
