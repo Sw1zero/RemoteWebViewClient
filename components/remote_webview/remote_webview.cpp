@@ -11,6 +11,7 @@
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <algorithm>
 
 namespace esphome {
 namespace remote_webview {
@@ -36,6 +37,42 @@ void RemoteWebView::setup() {
     touch_listener_ = new RemoteWebViewTouchListener(this);
     touch_->register_listener(touch_listener_);
     ESP_LOGI(TAG, "touch listener registered");
+  }
+  
+  // Dimming feature setup
+  this->last_touch_activity_us_ = esp_timer_get_time();
+  if (this->backlight_ && !this->dimming_steps_.empty()) {
+    std::sort(this->dimming_steps_.begin(), this->dimming_steps_.end(),
+              [](const DimmingStep &a, const DimmingStep &b) { return a.timeout_ms < b.timeout_ms; });
+    ESP_LOGCONFIG(TAG, "Backlight dimming configured with %d steps.", this->dimming_steps_.size());
+    for (const auto &step : this->dimming_steps_) {
+      ESP_LOGCONFIG(TAG, "  - Timeout: %ums, Brightness: %.0f%%", step.timeout_ms, step.brightness * 100.0f);
+    }
+  }
+}
+
+void RemoteWebView::loop() {
+  if (!this->backlight_ || this->dimming_steps_.empty()) {
+    return;
+  }
+
+  const uint64_t now_us = esp_timer_get_time();
+  const uint64_t elapsed_ms = (now_us - this->last_touch_activity_us_) / 1000;
+
+  int target_step_index = -1;
+  for (int i = this->dimming_steps_.size() - 1; i >= 0; --i) {
+    if (elapsed_ms >= this->dimming_steps_[i].timeout_ms) {
+      target_step_index = i;
+      break;
+    }
+  }
+
+  if (target_step_index != this->current_dim_step_index_) {
+    if (target_step_index == -1) {
+      this->wake_display_();
+    } else {
+      this->apply_dim_step_(target_step_index);
+    }
   }
 }
 
@@ -353,9 +390,18 @@ int RemoteWebView::jpeg_draw_cb_(JPEGDRAW *p) {
   return 1;
 }
 
+void RemoteWebView::record_touch_activity() {
+  this->last_touch_activity_us_ = esp_timer_get_time();
+  if (this->current_dim_step_index_ != -1) {
+    this->wake_display_();
+  }
+}
+
 bool RemoteWebView::ws_send_touch_event_(proto::TouchType type, int x, int y, uint8_t pid) {
   if (!ws_client_ || !ws_send_mtx_ || !esp_websocket_client_is_connected(ws_client_))
     return false;
+
+  this->record_touch_activity();
 
   // clamp into 16-bit
   if (x < 0) x = 0; if (y < 0) y = 0;
@@ -375,6 +421,7 @@ bool RemoteWebView::ws_send_touch_event_(proto::TouchType type, int x, int y, ui
 
 void RemoteWebViewTouchListener::touch(touchscreen::TouchPoint tp) {
   if (!parent_) return;
+  parent_->record_touch_activity();
   parent_->ws_send_touch_event_(proto::TouchType::Down, tp.x, tp.y, tp.id);
 }
 
@@ -421,22 +468,16 @@ bool RemoteWebView::ws_send_keepalive_() {
   return r == (int)n;
 }
 
-
-
 void RemoteWebViewTouchListener::update(const touchscreen::TouchPoints_t &pts) {
   if (!parent_) return;
-  const uint64_t now = esp_timer_get_time();
+  parent_->record_touch_activity();
   for (auto &p : pts) {
     switch (p.state) {
       case touchscreen::STATE_PRESSED:
         parent_->ws_send_touch_event_(proto::TouchType::Down, p.x, p.y, p.id);
         break;
       case touchscreen::STATE_UPDATED:
-        if (!RemoteWebView::kCoalesceMoves || RemoteWebView::kMoveIntervalUs == 0 ||
-            (now - parent_->last_move_us_) >= RemoteWebView::kMoveIntervalUs) {
-          parent_->last_move_us_ = now;
-          parent_->ws_send_touch_event_(proto::TouchType::Move, p.x, p.y, p.id);
-        }
+        parent_->ws_send_touch_event_(proto::TouchType::Move, p.x, p.y, p.id);
         break;
       case touchscreen::STATE_RELEASING:
       case touchscreen::STATE_RELEASED:
@@ -449,7 +490,7 @@ void RemoteWebViewTouchListener::update(const touchscreen::TouchPoints_t &pts) {
 
 void RemoteWebViewTouchListener::release() {
   if (!parent_) return;
-  
+  parent_->record_touch_activity();
   parent_->ws_send_touch_event_(proto::TouchType::Up, 0, 0, 0);
 }
 
@@ -465,6 +506,31 @@ void RemoteWebView::set_server(const std::string &s) {
     ESP_LOGE(TAG, "invalid port in server: %s", s.c_str());
     server_host_.clear();
     server_port_ = 0;
+  }
+}
+
+void RemoteWebView::wake_display_() {
+  if (this->backlight_) {
+    ESP_LOGD(TAG, "Waking display, setting brightness to 100%%");
+    auto call = this->backlight_->turn_on();
+    call.set_brightness(1.0f);
+    call.perform();
+  }
+  this->current_dim_step_index_ = -1;
+}
+
+void RemoteWebView::apply_dim_step_(int step_index) {
+  if (this->backlight_ && step_index >= 0 && (size_t)step_index < this->dimming_steps_.size()) {
+    const auto &step = this->dimming_steps_[step_index];
+    ESP_LOGD(TAG, "Applying dimming step %d: Brightness %.0f%%", step_index, step.brightness * 100.0f);
+    if (step.brightness > 0.0f) {
+      auto call = this->backlight_->turn_on();
+      call.set_brightness(step.brightness);
+      call.perform();
+    } else {
+      this->backlight_->turn_off().perform();
+    }
+    this->current_dim_step_index_ = step_index;
   }
 }
 
